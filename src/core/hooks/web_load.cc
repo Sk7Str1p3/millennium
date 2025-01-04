@@ -5,7 +5,14 @@
 #include <sys/encoding.h>
 #include <sys/http.h>   
 #include <unordered_set>
-// #include <boxer/boxer.h>
+#include "csp_bypass.h"
+
+unsigned long long g_hookedModuleId;
+
+// These URLS are blacklisted from being hooked, to prevent potential security issues.
+static const std::vector<std::string> g_blackListedUrls = {
+    "https://checkout\\.steampowered\\.com/.*"
+};
 
 WebkitHandler WebkitHandler::get() 
 {
@@ -19,7 +26,7 @@ void WebkitHandler::SetupGlobalHooks()
         { "id", 3242 }, { "method", "Fetch.enable" },
         { "params", {
             { "patterns", {
-                { { "urlPattern", "*" }, { "resourceType", "Document" }, { "requestStage", "Request" } },     
+                { { "urlPattern", "*" }, { "resourceType", "Document" }, { "requestStage", "Response" } },     
                 { { "urlPattern", fmt::format("{}*", this->m_javaScriptVirtualUrl) }, { "requestStage", "Request" } }
             }
         }}}
@@ -28,8 +35,7 @@ void WebkitHandler::SetupGlobalHooks()
 
 bool WebkitHandler::IsGetBodyCall(nlohmann::basic_json<> message) 
 {
-    return message["params"]["request"]["url"].get<std::string>()
-        .find(this->m_javaScriptVirtualUrl) != std::string::npos;
+    return message["params"]["request"]["url"].get<std::string>().find(this->m_javaScriptVirtualUrl) != std::string::npos;
 }
 
 std::filesystem::path WebkitHandler::ConvertToLoopBack(std::string requestUrl)
@@ -49,17 +55,17 @@ void WebkitHandler::RetrieveRequestFromDisk(nlohmann::basic_json<> message)
     std::filesystem::path localFilePath = this->ConvertToLoopBack(message["params"]["request"]["url"]);
     std::ifstream localFileStream(localFilePath);
 
-    bool failed = !localFileStream.is_open();
+    bool bFailedRead = !localFileStream.is_open();
 
-    if (failed)
+    if (bFailedRead)
     {
         LOG_ERROR("failed to retrieve file info from disk.");
     }
 
     const std::string fileContent((std::istreambuf_iterator<char>(localFileStream)), std::istreambuf_iterator<char>());
 
-    const std::string successMessage = "MILLENNIUM-VIRTUAL";
-    const std::string failedMessage = fmt::format("Millennium couldn't read {}", localFilePath.string());
+    const int responseCode            = bFailedRead ? 404 : 200;
+    const std::string responseMessage = bFailedRead ? "millennium" : "millennium couldn't read " + localFilePath.string();
 
     const nlohmann::json responseHeaders = nlohmann::json::array
     ({
@@ -71,10 +77,10 @@ void WebkitHandler::RetrieveRequestFromDisk(nlohmann::basic_json<> message)
         { "id", 63453 },
         { "method", "Fetch.fulfillRequest" },
         { "params", {
-            { "requestId",       message["params"]["requestId"] },
-            { "responseCode",    failed ? 404 : 200 },
-            { "responsePhrase",  failed ? failedMessage : successMessage },
+            { "responseCode", responseCode },
+            { "requestId", message["params"]["requestId"] },
             { "responseHeaders", responseHeaders },
+            { "responsePhrase", responseMessage },
             { "body", Base64Encode(fileContent) }
         }}
     });
@@ -82,25 +88,34 @@ void WebkitHandler::RetrieveRequestFromDisk(nlohmann::basic_json<> message)
 
 void WebkitHandler::GetResponseBody(nlohmann::basic_json<> message)
 {
-    hookMessageId -= 1;
-    m_requestMap->push_back({ hookMessageId, message["params"]["requestId"], message["params"]["resourceType"] });
+    const RedirectType statusCode = message["params"]["responseStatusCode"].get<RedirectType>();
 
-    Sockets::PostGlobal({
-        { "id", hookMessageId },
-        { "method", "Fetch.getResponseBody" },
-        { "params", { { "requestId", message["params"]["requestId"] } }}
-    });
+    // If the status code is a redirect, we just continue the request. 
+    if (statusCode == REDIRECT || statusCode == MOVED_PERMANENTLY || statusCode == FOUND || statusCode == TEMPORARY_REDIRECT || statusCode == PERMANENT_REDIRECT)
+    {
+        Sockets::PostGlobal({
+            { "id", 0 },
+            { "method", "Fetch.continueRequest" },
+            { "params", { { "requestId", message["params"]["requestId"] } }}
+        });
+    }
+    else
+    {
+        hookMessageId -= 1;
+        m_requestMap->push_back({ hookMessageId, message["params"]["requestId"], message["params"]["resourceType"], message });
+
+        Sockets::PostGlobal({
+            { "id", hookMessageId },
+            { "method", "Fetch.getResponseBody" },
+            { "params", { { "requestId", message["params"]["requestId"] } }}
+        });
+    }
 }
-
-// These URLS are blacklisted from being hooked, to prevent potential security issues.
-static const std::vector<std::string> g_blackListedUrls = {
-    "https://checkout\\.steampowered\\.com/.*"
-};
 
 const std::string WebkitHandler::PatchDocumentContents(std::string requestUrl, std::string original) 
 {
     std::string patched = original;
-    const std::string webkitPreloadModule = SystemIO::ReadFileSync((SystemIO::GetSteamPath() / "ext" / "data" / "shims" / "webkit_api.js").string());
+    const std::string webkitPreloadModule = SystemIO::ReadFileSync((SystemIO::GetInstallPath() / "ext" / "data" / "shims" / "webkit_api.js").string());
 
     if (webkitPreloadModule.empty()) 
     {
@@ -112,8 +127,7 @@ const std::string WebkitHandler::PatchDocumentContents(std::string requestUrl, s
     }
 
     std::vector<std::string> scriptModules;
-    std::string cssShimContent;
-    std::string scriptModuleArray;
+    std::string cssShimContent, scriptModuleArray;
 
     for (auto& hookItem : *m_hookListPtr) 
     {
@@ -143,8 +157,12 @@ const std::string WebkitHandler::PatchDocumentContents(std::string requestUrl, s
     std::string shimContent = fmt::format("<script type=\"module\" id=\"millennium-injected\" defer>{}millennium_components({}, [{}])\n</script>\n{}", webkitPreloadModule, m_ipcPort, scriptModuleArray, cssShimContent);
 
     for (const auto& blackListedUrl : g_blackListedUrls)        
+    {
         if (std::regex_match(requestUrl, std::regex(blackListedUrl))) 
+        {
             shimContent = cssShimContent; // Remove all queried JavaScript from the page. 
+        }
+    }
 
     if (patched.find("<head>") == std::string::npos) 
     {
@@ -152,6 +170,54 @@ const std::string WebkitHandler::PatchDocumentContents(std::string requestUrl, s
     }
 
     return patched.replace(patched.find("<head>"), 6, "<head>" + shimContent);
+}
+
+void WebkitHandler::HandleHooks(nlohmann::basic_json<> message)
+{
+    for (auto requestIterator = m_requestMap->begin(); requestIterator != m_requestMap->end();)
+    {
+        try 
+        {
+            auto [id, requestId, type, response] = (*requestIterator);
+
+            if (message["id"] != id || (message["id"] == id && !message["result"]["base64Encoded"]))
+            {
+                requestIterator++;
+                continue;
+            }
+
+            const std::string patchedContent = this->PatchDocumentContents(response["params"]["request"]["url"], Base64Decode(message["result"]["body"]));
+
+            BypassCSP();
+
+            const int responseCode = response["params"].value("responseStatusCode", 200);
+            const std::string responseMessage = response["params"].value("responseStatusText", "OK");
+
+            Sockets::PostGlobal({
+                { "id", 63453 },
+                { "method", "Fetch.fulfillRequest" },
+                { "params", {
+                    { "requestId", requestId },
+                    { "responseCode", responseCode },
+                    { "responseHeaders", response["params"]["responseHeaders"] },
+                    { "responsePhrase", responseMessage.length() > 0 ? responseMessage : "OK" },
+                    { "body", Base64Encode(patchedContent) }
+                }}
+            });
+
+            requestIterator = m_requestMap->erase(requestIterator);
+        }
+        catch (const nlohmann::detail::exception& ex) 
+        {
+            LOG_ERROR("error hooking WebKit -> {}\n\n{}", ex.what(), message.dump(4));
+            requestIterator = m_requestMap->erase(requestIterator);
+        }
+        catch (const std::exception& ex) 
+        {
+            LOG_ERROR("error hooking WebKit -> {}\n\n{}", ex.what(), message.dump(4));
+            requestIterator = m_requestMap->erase(requestIterator);
+        }
+    }
 }
 
 void WebkitHandler::DispatchSocketMessage(nlohmann::basic_json<> message)
@@ -162,63 +228,14 @@ void WebkitHandler::DispatchSocketMessage(nlohmann::basic_json<> message)
     {
         if (message["method"] == "Fetch.requestPaused")
         {
-            if (message["params"]["resourceType"] == "Document")
+            switch (this->IsGetBodyCall(message))
             {
-
-                std::string requestId  = message["params"]["requestId"].get<std::string>();
-                std::string requestUrl = message["params"]["request"]["url"].get<std::string>();
-                nlohmann::json requestHeaders = message["params"]["request"]["headers"];
-
-                nlohmann::json responseHeaders = nlohmann::json::array({
-                    {
-                        { "name", "Content-Security-Policy" },
-                        { "value", "default-src * 'unsafe-inline' 'unsafe-eval' data: blob:; script-src * 'unsafe-inline' 'unsafe-eval' data: blob:;" }
-                    },
-                    {
-                        { "name", "Access-Control-Allow-Origin" },
-                        { "value", "*" }
-                    }
-                });
-
-                for (auto& [key, value] : requestHeaders.items())
-                {
-                    responseHeaders.push_back({ { "name", key }, { "value", value } });
-                }
-
-                nlohmann::json responseHeadersJson;
-
-                const auto [originalContent, statusCode] = Http::GetWithHeaders(requestUrl.c_str(), requestHeaders, requestHeaders.value("User-Agent", ""), responseHeadersJson);
-
-                for (const auto& item : responseHeadersJson)
-                {
-                    if (!std::any_of(responseHeaders.begin(), responseHeaders.end(), [&](const nlohmann::json& existingHeader) {
-                        return existingHeader.at("name") == item.at("name");
-                    })) {
-                        responseHeaders.push_back(item);
-                    }
-                }
-
-                const std::string patchedContent = this->PatchDocumentContents(requestUrl, originalContent);
-
-                nlohmann::json message = {
-                    { "id", 63453 },
-                    { "method", "Fetch.fulfillRequest" },
-                    { "params", {
-                        { "requestId", requestId },
-                        { "responseCode", statusCode },
-                        { "responseHeaders", responseHeaders },
-                        { "body", Base64Encode(patchedContent) }
-                    }}
-                };  
-
-                Sockets::PostGlobal(message);
-
-            }
-            else if (this->IsGetBodyCall(message))
-            {
-                this->RetrieveRequestFromDisk(message);
+                case true:  { this->RetrieveRequestFromDisk(message); break; }
+                case false: { this->GetResponseBody(message);         break; }
             }
         }
+
+        this->HandleHooks(message);
     }
     catch (const nlohmann::detail::exception& ex) 
     {

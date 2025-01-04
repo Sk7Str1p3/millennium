@@ -15,46 +15,31 @@
 #include <signal.h>
 #include <cxxabi.h>
 #include <pipes/terminal_pipe.h>
-#include <git/vcs.h>
 #include <api/executor.h>
 
-class Preload 
+const static void VerifyEnvironment() 
 {
-public:
-    Preload() 
-    { 
-        this->VerifyEnvironment(); 
-    }
+    const auto filePath = SystemIO::GetSteamPath() / ".cef-enable-remote-debugging";
 
-    ~Preload() { }
-
-    const void VerifyEnvironment() 
+    // Steam's CEF Remote Debugger isn't exposed to port 8080
+    if (!std::filesystem::exists(filePath)) 
     {
-        const auto filePath = SystemIO::GetSteamPath() / ".cef-enable-remote-debugging";
+        std::ofstream(filePath).close();
 
-        // Steam's CEF Remote Debugger isn't exposed to port 8080
-        if (!std::filesystem::exists(filePath)) 
-        {
-            std::ofstream(filePath).close();
-
-            Logger.Log("Successfully enabled CEF remote debugging, you can now restart Steam...");
-            std::exit(1);
-        }
+        Logger.Log("Successfully enabled CEF remote debugging, you can now restart Steam...");
+        std::exit(1);
     }
-
-    const void Start() 
-    {
-        CheckForUpdates();
-    }
-};
+}
 
 void OnTerminate() 
 {
-    std::string errorMessage = "Millennium has a fatal error that it can't recover from, check the logs for more details!";
-    
     auto const exceptionPtr = std::current_exception();
-    if (exceptionPtr) {
-        try {
+    std::string errorMessage = "Millennium has a fatal error that it can't recover from, check the logs for more details!";
+
+    if (exceptionPtr) 
+    {
+        try 
+        {
             int status;
             auto const exceptionType = abi::__cxa_demangle(abi::__cxa_current_exception_type()->name(), 0, 0, &status);
             errorMessage.append("\nTerminating with uncaught exception of type `");
@@ -62,13 +47,13 @@ void OnTerminate()
             errorMessage.append("`");
             std::rethrow_exception(exceptionPtr); // rethrow the exception to catch its exception message
         }
-        catch (const std::exception& e) {
+        catch (const std::exception& e) 
+        {
             errorMessage.append(" with `what()` = \"");
             errorMessage.append(e.what());
             errorMessage.append("\"");
         }
-        catch (...) {
-        }
+        catch (...) { }
     }
 
     #ifdef _WIN32
@@ -98,10 +83,7 @@ const static void EntryMain()
     uint16_t ftpPort = Crow::CreateAsyncServer();
 
     const auto startTime = std::chrono::system_clock::now();
-    {
-        std::unique_ptr<Preload> preload = std::make_unique<Preload>();
-        preload->Start();
-    }
+    VerifyEnvironment();
 
     std::shared_ptr<PluginLoader> loader = std::make_shared<PluginLoader>(startTime, ftpPort);
     SetPluginLoader(loader);

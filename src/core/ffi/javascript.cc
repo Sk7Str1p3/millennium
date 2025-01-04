@@ -3,21 +3,16 @@
 #include <core/loader.h>
 #include <future>
 
-struct EvalResult {
-    nlohmann::basic_json<> json;
-    bool successfulCall;
-};
-
 #define SHARED_JS_EVALUATE_ID 54999
 
 #include <mutex>
 #include <condition_variable>
 
-const EvalResult ExecuteOnSharedJsContext(std::string javaScriptEval) 
+JavaScript::EvalResult JavaScript::ExecuteOnSharedJsContext(std::string javaScriptEval)
 {
     std::mutex mtx;
     std::condition_variable cv;
-    EvalResult evalResult;
+    JavaScript::EvalResult evalResult;
     bool resultReady = false;  // Flag to indicate when the result is ready
 
     bool messageSendSuccess = Sockets::PostShared(nlohmann::json({ 
@@ -34,7 +29,7 @@ const EvalResult ExecuteOnSharedJsContext(std::string javaScriptEval)
         throw std::runtime_error("couldn't send message to socket");
     }
 
-    int listenerId = JavaScript::SharedJSMessageEmitter::InstanceRef().OnMessage("msg", [&](const nlohmann::json& eventMessage, int listenerId) 
+    std::string listenerId = JavaScript::SharedJSMessageEmitter::InstanceRef().OnMessage("msg", "ExecuteOnSharedJsContext", [&](const nlohmann::json& eventMessage, std::string listenerId) 
     {
         std::lock_guard<std::mutex> lock(mtx);  // Lock mutex for safe access
 
@@ -146,10 +141,10 @@ PyObject* JavaScript::EvaluateFromSocket(std::string script)
         std::string type = response.json["type"];
 
         if      (type == "string") return PyUnicode_FromString(response.json["value"].get<std::string>().c_str());
-        else if (type == "bool")   return PyBool_FromLong(response.json["value"]);
-        else if (type == "int")    return PyLong_FromLong(response.json["value"]);
+        else if (type == "boolean")   return PyBool_FromLong(response.json["value"]);
+        else if (type == "number")    return PyLong_FromLong(response.json["value"]);
         else
-            return PyUnicode_FromString("Js function returned unaccepted type. accepted types [string, bool, int]");
+            return PyUnicode_FromString(fmt::format("Js function returned unaccepted type '{}'. Accepted types [string, boolean, number]", type).c_str());
 
     }
     catch (nlohmann::detail::exception& ex)

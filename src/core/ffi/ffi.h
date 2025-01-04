@@ -58,15 +58,19 @@ namespace JavaScript {
         Types type;
     };
 
-    using EventHandler = std::function<void(const nlohmann::json& eventMessage, int listenerId)>;
+    struct EvalResult {
+        nlohmann::basic_json<> json;
+        bool successfulCall;
+    };
+
+    using EventHandler = std::function<void(const nlohmann::json& eventMessage, std::string listenerId)>;
 
     class SharedJSMessageEmitter {
     private:
         SharedJSMessageEmitter() {}
 
-        std::unordered_map<std::string, std::vector<std::pair<int, EventHandler>>> events;
+        std::unordered_map<std::string, std::vector<std::pair<std::string, EventHandler>>> events;
         std::unordered_map<std::string, std::vector<nlohmann::json>> missedMessages; // New data structure for missed messages
-        int nextListenerId = 0;
 
     public:
         SharedJSMessageEmitter(const SharedJSMessageEmitter&) = delete;
@@ -77,22 +81,21 @@ namespace JavaScript {
             return InstanceRef;
         }
 
-        int OnMessage(const std::string& event, EventHandler handler) {
-            int listenerId = nextListenerId++;
-            events[event].push_back(std::make_pair(listenerId, handler));
+        std::string OnMessage(const std::string& event, const std::string name, EventHandler handler) {
+            events[event].push_back(std::make_pair(name, handler));
 
             // Deliver any missed messages
             auto it = missedMessages.find(event);
             if (it != missedMessages.end()) {
                 for (const auto message : it->second) {
-                    handler(message, listenerId);
+                    handler(message, name);
                 }
                 missedMessages.erase(it); // Clear missed messages once delivered
             }
-            return listenerId;
+            return name;
         }
 
-        void RemoveListener(const std::string& event, int listenerId) {
+        void RemoveListener(const std::string& event, std::string listenerId) {
             auto it = events.find(event);
             if (it != events.end()) {
                 auto& handlers = it->second;
@@ -113,7 +116,7 @@ namespace JavaScript {
                     try {
                         handler.second(data, handler.first);
                     } catch (const std::bad_function_call& e) {
-                        Logger.Warn("Failed to emit message. exception: {}", e.what());
+                        Logger.Warn("Failed to emit message on {}. exception: {}", handler.first, e.what());
                     }
                 }
             } else {
@@ -124,5 +127,6 @@ namespace JavaScript {
 
 	const std::string ConstructFunctionCall(const char* value, const char* methodName, std::vector<JavaScript::JsFunctionConstructTypes> params);
 
+    JavaScript::EvalResult ExecuteOnSharedJsContext(std::string javaScriptEval);
 	PyObject* EvaluateFromSocket(std::string script);
 }

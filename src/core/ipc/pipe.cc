@@ -25,9 +25,9 @@ static nlohmann::json CallServerMethod(nlohmann::basic_json<> message)
 
     switch (response.type)
     {
-        case Python::Types::Boolean:   { responseMessage["returnValue"] = (response.plain == "True" ? true : false); break; }
-        case Python::Types::String:    { responseMessage["returnValue"] = Base64Encode(response.plain); break; }
-        case Python::Types::Integer:   { responseMessage["returnValue"] = stoi(response.plain); break; }
+        case Python::Types::Boolean: { responseMessage["returnValue"] = (response.plain == "True" ? true : false); break; }
+        case Python::Types::String:  { responseMessage["returnValue"] = Base64Encode(response.plain);              break; }
+        case Python::Types::Integer: { responseMessage["returnValue"] = stoi(response.plain);                      break; }
 
         case Python::Types::Error: 
         {
@@ -51,7 +51,20 @@ static nlohmann::json OnFrontEndLoaded(nlohmann::basic_json<> message)
     });
 }
 
-void OnMessage(socketServer* serv, websocketpp::connection_hdl hdl, socketServer::message_ptr msg) 
+static nlohmann::json GetFrontendSettings(nlohmann::basic_json<> message)
+{
+    const std::string pluginName = message["data"]["pluginName"];
+
+    JavaScript::EvalResult response = JavaScript::ExecuteOnSharedJsContext(fmt::format("PLUGIN_LIST?.['{}']?.settings?.serialize()", pluginName));
+
+    return nlohmann::json({
+        { "id", message["iteration"] },
+        { "success", true },
+        { "settings", response.json },
+    });
+}
+
+void OnMessage(socketServer* serv, websocketpp::connection_hdl hdl, socketServer::message_ptr msg)
 {
     socketServer::connection_ptr serverConnection = serv->get_con_from_hdl(hdl);
 
@@ -70,6 +83,11 @@ void OnMessage(socketServer* serv, websocketpp::connection_hdl hdl, socketServer
             case IPCMain::Builtins::FRONT_END_LOADED: 
             {
                 responseMessage = OnFrontEndLoaded(json_data).dump(); 
+                break;
+            }
+            case IPCMain::Builtins::GET_FRONTEND_SETTINGS:
+            {
+                responseMessage = GetFrontendSettings(json_data).dump();
                 break;
             }
         }
