@@ -97,22 +97,22 @@ Supported Platforms:
 ```bash
 /
 ├─ usr/
-│  ├─ lib/
-│  │  ├─ millennium/
-│  │  │  ├─ libMillennium.so # millennium
-│  │  │  ├─ libpython-3.11.8.so # dynamically linked to millennium, allows user plugin backends to run
-├─ home/
-│  ├─ $user/
-│  │  ├─ .local/
-│  │  │  ├─ millennium/
-│  │  │  │  ├─ lib/
-│  │  │  │  │  ├─ assets/ # builtin plugin that provides base functionality for millennium.
-│  │  │  │  │  ├─ cache/ # a cached, minimal, production build of python's runtime deps, used to run and manage plugins
-│  │  │  │  │  ├─ shims/
-│  │  │  │  ├─ logs/
-│  │  │  │  ├─ plugins/ # user plugins
-│  │  ├─ .config/
-│  │  │  ├─ millennium/ # config files
+│  └─ lib/
+│     └─ millennium/
+│        ├─ libMillennium.so # millennium
+│        └─ libpython-3.11.8.so # dynamically linked to millennium, allows user plugin backends to run
+└─ home/
+   └─ $user/
+      ├─ .local/
+      │  └─ millennium/
+      │     ├─ lib/
+      │     │  ├─ assets/ # builtin plugin that provides base functionality for millennium.
+      │     │  ├─ cache/ # a cached, minimal, production build of python's runtime deps, used to run and manage plugins
+      │     │  └─ shims/
+      │     ├─ logs/
+      │     └─ plugins/ # user plugins
+      └─ .config/
+         └─ millennium/ # config files
 ```
 
 ## Building from source
